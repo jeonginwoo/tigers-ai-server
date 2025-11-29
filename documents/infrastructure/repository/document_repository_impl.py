@@ -1,3 +1,5 @@
+# documents/infrastructure/repository/document_repository_impl.py
+
 import io
 import os
 import uuid
@@ -55,31 +57,42 @@ class DocumentRepositoryImpl(DocumentRepositoryPort):
             return None, None
 
     def save(self, document: Document) -> Document:
-
         db: Session = SessionLocal()
         try:
-            db_obj = DocumentORM(
+            # result / status 컬럼이 ORM에 있으면 함께 저장
+            kwargs = dict(
                 file_name=document.file_name,
                 s3_key=document.s3_key,
                 uploader_id=document.uploader_id,
             )
+
+            if hasattr(DocumentORM, "result"):
+                kwargs["result"] = getattr(document, "result", None)
+            if hasattr(DocumentORM, "status"):
+                kwargs["status"] = getattr(document, "status", None)
+
+            db_obj = DocumentORM(**kwargs)
+
             db.add(db_obj)
             db.commit()
             db.refresh(db_obj)
 
-            # DB에서 받은 id와 timestamp를 도메인 객체에 반영
+            # DB에서 받은 id와 timestamp, result/status를 도메인 객체에 반영
             document.id = db_obj.id
             document.uploaded_at = db_obj.uploaded_at
             document.updated_at = db_obj.updated_at
+
+            if hasattr(db_obj, "result"):
+                document.result = db_obj.result
+            if hasattr(db_obj, "status"):
+                document.status = db_obj.status
+
         finally:
             db.close()
 
         return document
 
     def find_all(self) -> List[Document]:
-        """
-        DB에 있는 모든 문서를 도메인 객체로 반환
-        """
         db: Session = SessionLocal()
         documents: List[Document] = []
         try:
@@ -88,13 +101,88 @@ class DocumentRepositoryImpl(DocumentRepositoryPort):
                 doc = Document(
                     file_name=obj.file_name,
                     s3_key=obj.s3_key,
-                    uploader_id=obj.uploader_id
+                    uploader_id=obj.uploader_id,
                 )
                 doc.id = obj.id
                 doc.uploaded_at = obj.uploaded_at
                 doc.updated_at = obj.updated_at
+                # result / status 복원
+                if hasattr(obj, "result"):
+                    doc.result = obj.result
+                if hasattr(obj, "status"):
+                    doc.status = obj.status
                 documents.append(doc)
         finally:
             db.close()
 
         return documents
+
+    def find_by_id(self, document_id: int) -> Document | None:
+        db: Session = SessionLocal()
+        try:
+            obj = (
+                db.query(DocumentORM)
+                .filter(DocumentORM.id == document_id)
+                .first()
+            )
+            if obj is None:
+                return None
+            doc = Document(
+                file_name=obj.file_name,
+                s3_key=obj.s3_key,
+                uploader_id=obj.uploader_id,
+            )
+            doc.id = obj.id
+            doc.uploaded_at = obj.uploaded_at
+            doc.updated_at = obj.updated_at
+            if hasattr(obj, "result"):
+                doc.result = obj.result
+            if hasattr(obj, "status"):
+                doc.status = obj.status
+            return doc
+        finally:
+            db.close()
+    def update_result(
+        self,
+        document_id: int,
+        result: dict,
+        status: str | None = None,
+    ) -> Document:
+        """
+        분석 결과 및 상태를 업데이트하고 도메인 Document로 반환.
+        """
+        db: Session = SessionLocal()
+        try:
+            obj = (
+                db.query(DocumentORM)
+                .filter(DocumentORM.id == document_id)
+                .first()
+            )
+            if obj is None:
+                raise ValueError(f"Document(id={document_id}) not found")
+
+            obj.result = result
+            if hasattr(obj, "status") and status is not None:
+                obj.status = status
+
+            db.add(obj)
+            db.commit()
+            db.refresh(obj)
+
+            doc = Document(
+                file_name=obj.file_name,
+                s3_key=obj.s3_key,
+                uploader_id=obj.uploader_id,
+            )
+            doc.id = obj.id
+            doc.uploaded_at = obj.uploaded_at
+            doc.updated_at = obj.updated_at
+            doc.result = obj.result
+            if hasattr(obj, "status"):
+                doc.status = obj.status
+
+            return doc
+        finally:
+            db.close()
+
+
